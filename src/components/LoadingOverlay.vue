@@ -63,7 +63,7 @@ const animateLoading = async () => {
             {{ message || 'Carregando dados do NPS' }}
           </h3>
           <p class="mt-1 text-sm text-gray-500">
-            Isso pode demorar alguns minutos...
+            Isso pode demorar alguns minutos na primeira vez...
           </p>
         </div>
 

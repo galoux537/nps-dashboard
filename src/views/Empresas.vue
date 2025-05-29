@@ -37,9 +37,7 @@ interface Empresa {
   nps: number
   totalAvaliacoes: number
   feedbacks: FeedbackData[]
-  insights?: string
-  planoAcao?: string
-  detalhes?: {
+  detalhes: {
     avaliacoesNegativas: ComplaintCount[]
     roleBreakdown: Record<string, RoleStats>
     notasClicadas: {
@@ -51,7 +49,6 @@ interface Empresa {
       user_id: string
     }[]
   }
-  analysisData?: any
 }
 
 interface UserComplaint {
@@ -79,6 +76,26 @@ const selectedEmpresaDetails = ref<Empresa | null>(null)
 
 // Usar os filtros atuais do store
 const currentFilters = computed(() => feedbackStore.currentFilters)
+
+// Adicionar no início do script
+const sortOrder = ref<'asc' | 'desc'>('asc')
+const sortField = ref('nps')
+
+// Função para ordenar empresas
+const sortEmpresas = (empresas: Empresa[]) => {
+  return [...empresas].sort((a, b) => {
+    if (sortField.value === 'nps') {
+      // Ordenar por NPS
+      const comparison = sortOrder.value === 'asc' ? a.nps - b.nps : b.nps - a.nps
+      // Em caso de empate, ordenar por total de avaliações
+      if (comparison === 0) {
+        return b.totalAvaliacoes - a.totalAvaliacoes
+      }
+      return comparison
+    }
+    return 0
+  })
+}
 
 // Função para categorizar reclamações
 const categorizarReclamacao = (texto: string): string => {
@@ -117,56 +134,45 @@ const isValidText = (text: string): boolean => {
 
 // Função para preparar dados para análise
 const prepareDataForAnalysis = () => {
-  const fourMonthsAgo = subMonths(new Date(), 4)
-  
-  // Usar dados filtrados se disponíveis, senão usar todos os dados
+  // Usar dados filtrados se disponíveis, senão usar dados dos últimos 3 meses
   const sourceData = feedbackStore.filteredData.length > 0 
     ? feedbackStore.filteredData 
     : feedbackStore.feedbackData
 
-  // Primeiro, agrupar todos os feedbacks por ID da empresa
+  // Agrupar feedbacks por empresa usando os dados filtrados
   const feedbacksByCompany = sourceData
-    .filter(feedback => 
-      isAfter(parseISO(feedback.created_at), fourMonthsAgo) && 
-      feedback.company_name && // Garantir que tem nome da empresa
-      feedback.company_name !== 'Empresa sem nome' && // Ignorar empresas sem nome
-      !feedback.company_name.toLowerCase().includes('seller') // Ignorar empresa Seller
-    )
     .reduce((acc, feedback) => {
       const id = feedback.company_id
       if (!acc[id]) {
         acc[id] = []
       }
-      // Verificar se o feedback já existe para evitar duplicatas
-      const isDuplicate = acc[id].some(f => 
-        f.user_id === feedback.user_id && 
-        f.created_at === feedback.created_at
-      )
-      if (!isDuplicate) {
-        acc[id].push(feedback)
-      }
+      acc[id].push(feedback)
       return acc
     }, {} as Record<string, FeedbackData[]>)
 
-  // Processar cada empresa uma única vez
+  // Processar cada empresa usando os dados filtrados
   empresasAnalisadas.value = Object.entries(feedbacksByCompany)
     .map(([companyId, feedbacks]): Empresa | null => {
-      // Pegar o nome mais recente da empresa
-      const bestName = feedbacks
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
-        ?.company_name || ''
-
-      // Se não tiver nome válido, pular esta empresa
+      const bestName = feedbacks[0]?.company_name || ''
       if (!bestName) return null
 
-      // Calcular métricas
-      const total = feedbacks.length
-      const promotores = feedbacks.filter(f => f.score >= 9).length
-      const detratores = feedbacks.filter(f => f.score <= 6).length
+      // Aplicar filtros de cargo se existirem
+      const filteredFeedbacks = feedbacks.filter(f => {
+        if (currentFilters.value.roles.length > 0) {
+          return currentFilters.value.roles.includes(f.role)
+        }
+        return true
+      })
+
+      // Se não houver feedbacks após filtro, retornar null
+      if (filteredFeedbacks.length === 0) return null
+
+      const total = filteredFeedbacks.length
+      const promotores = filteredFeedbacks.filter(f => f.score >= 9).length
+      const detratores = filteredFeedbacks.filter(f => f.score <= 6).length
       const nps = Math.round(((promotores - detratores) / total) * 100)
 
-      // Processar reclamações
-      const reclamacoes = feedbacks
+      const reclamacoes = filteredFeedbacks
         .filter(f => f.score <= 6 && f.reason?.trim())
         .reduce((acc, f) => {
           const texto = f.reason.trim()
@@ -177,31 +183,42 @@ const prepareDataForAnalysis = () => {
           return acc
         }, {} as Record<string, ComplaintCount>)
 
-      // Ordenar reclamações por contagem
-      const reclamacoesSorted = Object.values(reclamacoes)
-        .sort((a, b) => b.count - a.count)
-
-      const maiorReclamacao = reclamacoesSorted.length > 0
-        ? categorizarReclamacao(reclamacoesSorted[0].texto)
-        : 'Sem reclamações'
+      const reclamacoesSorted = Object.values(reclamacoes).sort((a, b) => b.count - a.count)
 
       return {
         company_id: companyId,
         nome: bestName,
-        feedbacks,
-        maiorReclamacao,
+        feedbacks: filteredFeedbacks, // Usar feedbacks filtrados
+        maiorReclamacao: reclamacoesSorted.length > 0 ? categorizarReclamacao(reclamacoesSorted[0].texto) : 'Sem reclamações',
         maiorReclamacaoCompleta: reclamacoesSorted[0]?.texto || '',
         totalAvaliacoes: total,
         nps,
         detalhes: {
           avaliacoesNegativas: reclamacoesSorted,
-          roleBreakdown: processRoleBreakdown(feedbacks)
+          roleBreakdown: processRoleBreakdown(filteredFeedbacks),
+          notasClicadas: filteredFeedbacks.map(f => ({
+            score: f.score,
+            reason: f.reason,
+            role: f.role,
+            created_at: f.created_at,
+            company_id: f.company_id,
+            user_id: f.user_id
+          }))
         }
       } as Empresa
     })
     .filter((empresa): empresa is Empresa => empresa !== null)
-    .filter(empresa => empresa.totalAvaliacoes >= 5)
-    .sort((a, b) => a.nps - b.nps)
+    // Ordenar primeiro por NPS (do menor para o maior)
+    // Em caso de empate no NPS, ordenar por quantidade de avaliações (do maior para o menor)
+    .sort((a, b) => {
+      if (a.nps === b.nps) {
+        return b.totalAvaliacoes - a.totalAvaliacoes
+      }
+      return a.nps - b.nps
+    })
+
+  console.log('Total de empresas listadas:', empresasAnalisadas.value.length)
+  console.log('Total de feedbacks processados:', sourceData.length)
 }
 
 // Função para calcular NPS por função
@@ -349,33 +366,24 @@ const processedEmpresas = computed(() => {
   return result
 })
 
-// Computed para empresas filtradas
+// Atualizar o computed empresasFiltradas
 const empresasFiltradas = computed(() => {
-  if (!searchQuery.value.trim()) {
-    return processedEmpresas.value
-  }
-
   const query = searchQuery.value.toLowerCase().trim()
-  return processedEmpresas.value.filter(empresa => {
-    return (
-      // Busca por nome da empresa
-      empresa.nome.toLowerCase().includes(query) ||
-      // Busca por ID
-      empresa.company_id.toString().includes(query) ||
-      // Busca por reclamação
-      empresa.maiorReclamacao.toLowerCase().includes(query) ||
-      // Busca por NPS
-      empresa.nps.toString().includes(query) ||
-      // Busca nas avaliações negativas
-      empresa.detalhes?.avaliacoesNegativas.some(av => 
-        av.texto.toLowerCase().includes(query)
-      ) ||
-      // Busca por cargos
-      Object.keys(empresa.detalhes?.roleBreakdown || {}).some(role =>
-        role.toLowerCase().includes(query)
-      )
-    )
-  })
+  const empresas = query 
+    ? empresasAnalisadas.value.filter((empresa: Empresa) => {
+        return (
+          empresa.nome.toLowerCase().includes(query) ||
+          empresa.company_id.toString().includes(query) ||
+          empresa.maiorReclamacao.toLowerCase().includes(query) ||
+          empresa.nps.toString().includes(query) ||
+          empresa.detalhes?.avaliacoesNegativas.some((av: ComplaintCount) => 
+            av.texto.toLowerCase().includes(query)
+          )
+        )
+      })
+    : empresasAnalisadas.value
+
+  return sortEmpresas(empresas)
 })
 
 const showPlainData = (empresa: any) => {
@@ -547,22 +555,15 @@ const empresasDetratoras = computed(() => {
 
 // Atualizar os watches e onMounted
 onMounted(() => {
-  // Manter o prepareDataForAnalysis pois é específico para esta view
   prepareDataForAnalysis()
 })
 
-// Atualizar o watch para processar os dados quando mudarem
-watch(() => feedbackStore.filteredData, () => {
-  searchQuery.value = ''
+// Atualizar o watch para processar os dados quando os filtros mudarem
+watch([
+  () => feedbackStore.filteredData,
+  () => currentFilters.value
+], () => {
   prepareDataForAnalysis()
-}, { deep: true })
-
-// Também observar feedbackData para casos onde não há filtros
-watch(() => feedbackStore.feedbackData, () => {
-  if (feedbackStore.filteredData.length === 0) {
-    searchQuery.value = ''
-    prepareDataForAnalysis()
-  }
 }, { deep: true })
 
 // Simplificar o watch do searchQuery
@@ -590,6 +591,11 @@ const getNotasClicadas = (empresa: Empresa | null) => {
       count
     }))
     .sort((a, b) => a.score - b.score);
+}
+
+// Função para alternar ordenação
+const toggleSort = () => {
+  sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
 }
 </script>
 
@@ -680,13 +686,28 @@ const getNotasClicadas = (empresa: Empresa | null) => {
       <!-- Tabela -->
       <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
-          <thead class="bg-[#F0F4FA]">
+          <thead class="bg-gray-50">
             <tr>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Empresa</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MAIOR RECLAMAÇÃO</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">TOTAL AVALIAÇÕES</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NPS</th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                ID
+              </th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                EMPRESA
+              </th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                MAIOR RECLAMAÇÃO
+              </th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                TOTAL AVALIAÇÕES
+              </th>
+              <th 
+                scope="col" 
+                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer"
+                @click="toggleSort"
+              >
+                NPS
+                <span class="ml-1">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+              </th>
             </tr>
           </thead>
           <tbody class="bg-white divide-y divide-gray-200">

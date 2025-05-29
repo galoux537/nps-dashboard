@@ -7,6 +7,7 @@ import { ptBR } from 'date-fns/locale'
 import jsPDF from 'jspdf'
 import 'jspdf-autotable'
 import { formatDateTime } from '../utils/dateFormat'
+import Papa from 'papaparse'
 
 // Estender o tipo jsPDF para incluir autoTable
 declare module 'jspdf' {
@@ -166,195 +167,83 @@ onUnmounted(() => {
   document.removeEventListener('click', closeExportMenu)
 })
 
-// Função aprimorada para exportação CSV com melhor formatação
+// Função para formatar dados para download
+const formatDataForExport = () => {
+  return feedbackStore.filteredData.map(feedback => ({
+    'Nome do Agente': feedback.user_name || '-',
+    'Empresa': feedback.company_name || '-',
+    'Nota': feedback.score,
+    'Status': getNPSZone(feedback.score).zone,
+    'Comentário': feedback.reason || '-',
+    'Data': formatDateTime(feedback.created_at),
+    'Função': feedback.role
+  }))
+}
+
+// Função para exportar CSV
 const exportToCSV = () => {
-  event?.stopPropagation();
-  isExportMenuOpen.value = false;
-  
-  try {
-    // Usar ponto e vírgula como separador (padrão mais comum no Brasil)
-    const separator = ";";
-    
-    // Preparar dados para exportação com formatação melhorada
-    const headers = ['ID', 'Nota', 'Status', 'Comentário', 'Data', 'Empresa', 'Função'];
-    
-    // Mapear dados com formatação consistente
-    const dataToExport = sortedData.value.map(item => {
-      // Obter o status do NPS
-      const npsZone = getNPSZone(item.score).zone;
-      
-      // Formatar a data no padrão brasileiro
-      const formattedDate = format(new Date(item.created_at), 'dd/MM/yyyy HH:mm:ss');
-      
-      // Sanitizar o comentário - remover quebras de linha e aspas duplicadas
-      const sanitizedComment = item.reason 
-        ? item.reason.replace(/"/g, '""').replace(/\n/g, ' ') 
-        : '';
-      
-      return [
-        item.user_id,                  // ID
-        item.score,                    // Nota
-        npsZone,                       // Status
-        sanitizedComment,              // Comentário
-        formattedDate,                 // Data
-        item.company_id,               // Empresa
-        item.role                      // Função
-      ];
-    });
-    
-    // Adicionar cabeçalho com formatação
-    const formattedHeaders = headers.map(header => `"${header}"`);
-    
-    // Montar as linhas com formatação consistente
-    const formattedRows = dataToExport.map(row => 
-      row.map((cell, index) => {
-        // Garantir que todos os campos de texto tenham aspas
-        if (typeof cell === 'string') {
-          return `"${cell}"`;
-        }
-        // Números podem ficar sem aspas
-        return cell;
-      }).join(separator)
-    );
-    
-    // Montar o conteúdo CSV
-    const csvContent = [
-      formattedHeaders.join(separator),
-      ...formattedRows
-    ].join('\n');
-    
-    // Adicionar BOM para garantir compatibilidade com caracteres especiais no Excel
-    const BOM = '\uFEFF';
-    const finalContent = BOM + csvContent;
-    
-    // Configurar o arquivo para download
-    const blob = new Blob([finalContent], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    
-    // Nome do arquivo com a data
-    const fileName = `relatorio-nps-${format(new Date(), 'yyyy-MM-dd')}.csv`;
-    
-    // Configurar e executar o download
-    link.href = url;
-    link.setAttribute('download', fileName);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    
-    console.log('Download de CSV concluído');
-  } catch (error) {
-    console.error('Erro ao exportar CSV:', error);
-    alert('Erro ao gerar o arquivo CSV.');
-  }
-};
+  const data = formatDataForExport()
+  const csvContent = Papa.unparse(data)
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const link = document.createElement('a')
+  const url = URL.createObjectURL(blob)
+  link.setAttribute('href', url)
+  link.setAttribute('download', `relatorio-nps-${formatDateTime(new Date())}.csv`)
+  link.style.visibility = 'hidden'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
 
-// Função aprimorada para exportar PDF com tabela formatada
+// Função para exportar PDF
 const exportToPDF = () => {
-  event?.stopPropagation();
-  isExportMenuOpen.value = false;
-  
-  try {
-    // Criar novo documento PDF
-    const doc = new jsPDF();
-    
-    // Configurações de página
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 10;
-    
-    // Adicionar título na primeira página
-    doc.setFontSize(18);
-    doc.text('Relatório NPS', margin, margin + 12);
-    
-    // Informações do relatório
-    doc.setFontSize(11);
-    doc.text(`Data: ${format(new Date(), 'dd/MM/yyyy')}`, margin, margin + 20);
-    doc.text(`Total de registros: ${sortedData.value.length}`, margin, margin + 26);
-    
-    // Depois, adicionar tipagem para os callbacks
-    interface AutoTableData {
-      section: string;
-      column: { index: number };
-      cell: { text: string };
-      [key: string]: any;
+  const doc = new jsPDF()
+  const data = formatDataForExport()
+
+  // Configurar cabeçalho do PDF
+  doc.setFontSize(18)
+  doc.text('Relatório NPS', 14, 20)
+  doc.setFontSize(11)
+  doc.text(`Data: ${formatDateTime(new Date())}`, 14, 30)
+  doc.text(`Total de registros: ${data.length}`, 14, 40)
+
+  // Configurar colunas da tabela
+  const columns = [
+    'Nome do Agente',
+    'Empresa',
+    'Nota',
+    'Status',
+    'Comentário',
+    'Data',
+    'Função'
+  ]
+
+  // Formatar dados para a tabela do PDF
+  const rows = data.map(item => [
+    item['Nome do Agente'],
+    item['Empresa'],
+    item['Nota'],
+    item['Status'],
+    item['Comentário'],
+    item['Data'],
+    item['Função']
+  ])
+
+  // Gerar tabela
+  doc.autoTable({
+    startY: 50,
+    head: [columns],
+    body: rows,
+    headStyles: { fillColor: [59, 130, 246] },
+    styles: { overflow: 'linebreak' },
+    columnStyles: {
+      4: { cellWidth: 50 } // Ajustar largura da coluna de comentários
     }
+  })
 
-    // Na função que usa autoTable
-    doc.autoTable({
-      startY: margin + 35,
-      head: [['ID', 'Nota', 'Status', 'Comentário', 'Data', 'Empresa', 'Função']],
-      body: sortedData.value.map(item => [
-        item.user_id,
-        item.score,
-        getNPSZone(item.score).zone,
-        item.reason || '',
-        format(new Date(item.created_at), 'dd/MM/yyyy HH:mm:ss'),
-        item.company_id,
-        item.role
-      ]),
-      styles: {
-        fontSize: 9,
-        cellPadding: 3,
-        lineColor: [0, 0, 0],
-        lineWidth: 0.1,
-      },
-      headStyles: {
-        fillColor: [240, 240, 240],
-        textColor: [0, 0, 0],
-        fontStyle: 'bold',
-        halign: 'left'
-      },
-      alternateRowStyles: {
-        fillColor: [248, 248, 248],
-      },
-      columnStyles: {
-        0: { cellWidth: 20 }, // ID
-        1: { cellWidth: 15 }, // Nota
-        2: { cellWidth: 25 }, // Status
-        3: { cellWidth: 'auto' }, // Comentário
-        4: { cellWidth: 35 }, // Data
-        5: { cellWidth: 20 }, // Empresa
-        6: { cellWidth: 20 }, // Função
-      },
-      theme: 'grid', // Adiciona linhas de grade à tabela
-      margin: { top: margin, right: margin, bottom: margin, left: margin },
-      // Adicionar tipo para o parâmetro data
-      didDrawPage: (data: any) => {
-        // Adicionar número da página no rodapé
-        doc.setFontSize(8);
-        doc.text(
-          `Página ${doc.getNumberOfPages()}`,
-          data.settings.margin.left,
-          pageHeight - 10
-        );
-      },
-      // Adicionar tipo para o parâmetro data
-      willDrawCell: (data: AutoTableData) => {
-        if (data.section === 'body' && data.column.index === 3 && data.cell.text.length > 50) {
-          data.cell.text = data.cell.text.substring(0, 47) + '...';
-        }
-      }
-    });
-    
-    // Salvar o PDF
-    doc.save(`relatorio-nps-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
-  } catch (error) {
-    console.error('Erro ao exportar PDF:', error);
-    alert('Erro ao gerar o arquivo PDF. Detalhes: ' + error);
-  }
-};
-
-// Versão simplificada para teste
-const exportToCSVSimples = () => {
-  const dados = "coluna1,coluna2,coluna3\nvalor1,valor2,valor3";
-  const blob = new Blob([dados], { type: 'text/csv' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = "teste.csv";
-  link.click();
-};
+  // Salvar PDF
+  doc.save(`relatorio-nps-${formatDateTime(new Date())}.pdf`)
+}
 
 // Função para alternar o filtro de comentários
 const toggleCommentFilter = () => {
