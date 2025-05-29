@@ -1,15 +1,63 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useFeedbackStore } from '../stores/feedback'
 import { startOfMonth, endOfMonth, parseISO, format, subMonths, eachMonthOfInterval } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import AIInsightsPanel from '../components/AIInsightsPanel.vue'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js'
+import LoadingOverlay from '../components/LoadingOverlay.vue'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
 const feedbackStore = useFeedbackStore()
+
+const isLoading = ref(true)
+const loadingProgress = ref(0)
+
+// Função para carregar dados
+const loadData = async () => {
+  isLoading.value = true
+  loadingProgress.value = 0
+  
+  try {
+    // Simular etapas de carregamento
+    const updateProgress = (progress: number) => {
+      loadingProgress.value = progress
+    }
+
+    // Etapa 1: Inicialização
+    updateProgress(10)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // Etapa 2: Buscar dados
+    updateProgress(30)
+    await feedbackStore.fetchData()
+    
+    // Etapa 3: Processar dados
+    updateProgress(60)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    // Etapa 4: Finalizar
+    updateProgress(90)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    
+    updateProgress(100)
+    
+    // Pequeno delay antes de esconder o loading
+    setTimeout(() => {
+      isLoading.value = false
+    }, 500)
+  } catch (error) {
+    console.error('Erro ao carregar dados:', error)
+    // Você pode adicionar tratamento de erro aqui
+  }
+}
+
+// Chamar loadData quando o componente for montado
+onMounted(() => {
+  loadData()
+})
 
 // Utilizar dados filtrados ao invés de últimos 4 meses
 const filteredData = computed(() => feedbackStore.filteredData || [])
@@ -378,7 +426,89 @@ const getChartData = computed(() => {
   }
 })
 
-// Atualizar chartData com os dados filtrados e estilo visual consistente
+// Atualizar configurações do gráfico
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  scales: {
+    y: {
+      beginAtZero: true,
+      grid: {
+        display: true,
+        color: '#E1E9F4',
+        drawBorder: true,
+      },
+      ticks: {
+        color: '#64748B',
+        font: {
+          size: 12
+        }
+      }
+    },
+    x: {
+      grid: {
+        display: true,
+        color: '#E1E9F4',
+        drawBorder: true
+      },
+      ticks: {
+        color: '#64748B',
+        font: {
+          size: 12
+        }
+      }
+    }
+  },
+  plugins: {
+    legend: {
+      display: true,
+      position: 'bottom' as const,
+      align: 'center' as const,
+      labels: {
+        boxWidth: 12,
+        boxHeight: 12,
+        padding: 15,
+        color: '#64748B',
+        usePointStyle: true,
+        pointStyle: 'circle',
+        font: {
+          size: 12
+        }
+      }
+    },
+    tooltip: {
+      enabled: true,
+      mode: 'index' as const,
+      intersect: false,
+      backgroundColor: '#1F2937',
+      titleColor: '#fff',
+      bodyColor: '#fff',
+      borderColor: '#374151',
+      borderWidth: 0,
+      padding: 10,
+      displayColors: true,
+      titleFont: {
+        size: 13,
+        weight: 'normal'
+      },
+      bodyFont: {
+        size: 12
+      },
+      callbacks: {
+        title: function(tooltipItems: any[]) {
+          return tooltipItems[0].label;
+        },
+        label: function(context: any) {
+          const label = context.dataset.label || '';
+          const value = context.parsed.y;
+          return ` ${label}: ${value}`;
+        }
+      }
+    }
+  }
+}
+
+// Atualizar chartData com cores mais consistentes
 const chartData = computed(() => {
   const data = getChartData.value
   
@@ -387,93 +517,37 @@ const chartData = computed(() => {
     datasets: [
       {
         label: 'Reclamações de instabilidade',
-        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-        borderColor: 'rgb(255, 99, 132)',
+        backgroundColor: 'rgba(239, 68, 68, 0.2)',
+        borderColor: 'rgb(239, 68, 68)',
         data: data.instabilityData,
         tension: 0.3,
-        pointBackgroundColor: 'rgb(255, 99, 132)', // Pontos sólidos
-        pointRadius: 5,
-        pointHoverRadius: 7
+        pointBackgroundColor: 'rgb(239, 68, 68)',
+        pointRadius: 4,
+        pointHoverRadius: 6
       },
       {
         label: 'Reclamações de suporte',
-        backgroundColor: 'rgba(54, 162, 235, 0.2)',
-        borderColor: 'rgb(54, 162, 235)',
+        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+        borderColor: 'rgb(59, 130, 246)',
         data: data.supportData,
         tension: 0.3,
-        pointBackgroundColor: 'rgb(54, 162, 235)', // Pontos sólidos
-        pointRadius: 5,
-        pointHoverRadius: 7
+        pointBackgroundColor: 'rgb(59, 130, 246)',
+        pointRadius: 4,
+        pointHoverRadius: 6
       },
       {
         label: 'Problemas com mailing',
-        backgroundColor: 'rgba(255, 206, 86, 0.2)',
-        borderColor: 'rgb(255, 206, 86)',
+        backgroundColor: 'rgba(245, 158, 11, 0.2)',
+        borderColor: 'rgb(245, 158, 11)',
         data: data.mailingData,
         tension: 0.3,
-        pointBackgroundColor: 'rgb(255, 206, 86)', // Pontos sólidos
-        pointRadius: 5,
-        pointHoverRadius: 7
+        pointBackgroundColor: 'rgb(245, 158, 11)',
+        pointRadius: 4,
+        pointHoverRadius: 6
       }
     ]
   }
 })
-
-// Configurações do gráfico atualizadas para o novo estilo visual
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: {
-    y: {
-      beginAtZero: true,
-      title: {
-        display: true,
-        text: 'NPS'
-      },
-      grid: {
-        display: true,
-        color: '#E5E7EB'
-      }
-    },
-    x: {
-      title: {
-        display: true,
-        text: 'Mês'
-      },
-      grid: {
-        display: false
-      }
-    }
-  },
-  plugins: {
-    legend: {
-      display: false
-    },
-    tooltip: {
-      backgroundColor: '#fff',
-      titleColor: '#111',
-      bodyColor: '#333',
-      borderColor: '#e1e1e1',
-      borderWidth: 1,
-      padding: 10,
-      displayColors: false
-    }
-  },
-  elements: {
-    line: {
-      tension: 0.4
-    },
-    point: {
-      radius: 5,
-      hitRadius: 10,
-      hoverRadius: 7
-    }
-  },
-  interaction: {
-    mode: 'index' as 'index',
-    intersect: false
-  }
-}
 
 // Definindo a propriedade insights
 const insights = ref({ recommendations: [] })
@@ -587,284 +661,295 @@ watch(() => feedbackStore.getCurrentFilters(), () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <!-- Seção de Insights -->
-    <div>
-      <!-- Cards de Insights -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <!-- Card do Gestor -->
-        <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-medium text-[#373753]">Gestor</h3>
-            <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
-              {{ currentStats.gestor.nps }}% NPS
-            </span>
+  <div class="relative">
+    <!-- Loading Overlay -->
+    <LoadingOverlay 
+      v-if="isLoading"
+      :progress="loadingProgress"
+    />
+    
+    <!-- Resto do seu template -->
+    <div v-else>
+      <div class="space-y-6">
+        <!-- Seção de Insights -->
+        <div>
+          <!-- Cards de Insights -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Card do Gestor -->
+            <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-medium text-[#373753]">Gestor</h3>
+                <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
+                  {{ currentStats.gestor.nps }}% NPS
+                </span>
+              </div>
+
+              <!-- Adicionando o divisor -->
+              <hr class="border-t border-gray-200 mb-6 -mx-6">
+
+              <div class="space-y-3">
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😀</span>
+                    Promotores
+                  </span>
+                  <span class="font-medium">{{ currentStats.gestor.promoters }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😐</span>
+                    Neutros
+                  </span>
+                  <span class="font-medium">{{ currentStats.gestor.neutrals }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😡</span>
+                    Detratores
+                  </span>
+                  <span class="font-medium">{{ currentStats.gestor.detractors }}</span>
+                </div>
+                <div class="pt-6 border-t">
+                  <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
+                  <div class="h-[60px] w-full chart-grid-bg">
+                    <Line :data="gestorChartData" :options="miniChartOptions" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card do Supervisor -->
+            <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-medium text-[#373753]">Supervisor</h3>
+                <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
+                  {{ currentStats.supervisor.nps }}% NPS
+                </span>
+              </div>
+
+              <!-- Adicionando o divisor -->
+              <hr class="border-t border-gray-200 mb-6 -mx-6">
+
+              <div class="space-y-3">
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😀</span>
+                    Promotores
+                  </span>
+                  <span class="font-medium">{{ currentStats.supervisor.promoters }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😐</span>
+                    Neutros
+                  </span>
+                  <span class="font-medium">{{ currentStats.supervisor.neutrals }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😡</span>
+                    Detratores
+                  </span>
+                  <span class="font-medium">{{ currentStats.supervisor.detractors }}</span>
+                </div>
+                <div class="pt-6 border-t">
+                  <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
+                  <div class="h-[60px] w-full chart-grid-bg">
+                    <Line :data="supervisorChartData" :options="miniChartOptions" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card do Agente -->
+            <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-medium text-[#373753]">Agente</h3>
+                <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
+                  {{ currentStats.agente.nps }}% NPS
+                </span>
+              </div>
+
+              <!-- Adicionando o divisor -->
+              <hr class="border-t border-gray-200 mb-6 -mx-6">
+
+              <div class="space-y-3">
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😀</span>
+                    Promotores
+                  </span>
+                  <span class="font-medium">{{ currentStats.agente.promoters }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😐</span>
+                    Neutros
+                  </span>
+                  <span class="font-medium">{{ currentStats.agente.neutrals }}</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                  <span class="text-gray-500 flex items-center gap-2">
+                    <span class="text-lg">😡</span>
+                    Detratores
+                  </span>
+                  <span class="font-medium">{{ currentStats.agente.detractors }}</span>
+                </div>
+                <div class="pt-6 border-t">
+                  <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
+                  <div class="h-[60px] w-full chart-grid-bg">
+                    <Line :data="agenteChartData" :options="miniChartOptions" />
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <!-- Adicionando o divisor -->
-          <hr class="border-t border-gray-200 mb-6 -mx-6">
-
-          <div class="space-y-3">
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😀</span>
-                Promotores
-              </span>
-              <span class="font-medium">{{ currentStats.gestor.promoters }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😐</span>
-                Neutros
-              </span>
-              <span class="font-medium">{{ currentStats.gestor.neutrals }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😡</span>
-                Detratores
-              </span>
-              <span class="font-medium">{{ currentStats.gestor.detractors }}</span>
-            </div>
-            <div class="pt-6 border-t">
-              <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
-              <div class="h-[60px] w-full chart-grid-bg">
-                <Line :data="gestorChartData" :options="miniChartOptions" />
+          <!-- Recomendações gerais -->
+          <div v-if="insights?.recommendations?.length" class="col-span-full mt-6 bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold mb-4">Recomendações Gerais</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div v-for="(rec, i) in insights.recommendations" 
+                   :key="i" 
+                   class="bg-gray-50 p-4 rounded-lg">
+                <p class="text-gray-700">{{ rec }}</p>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Card do Supervisor -->
-        <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-medium text-[#373753]">Supervisor</h3>
-            <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
-              {{ currentStats.supervisor.nps }}% NPS
-            </span>
+        <!-- Espaçamento entre seções -->
+        <!-- Removido o espaçamento adicional -->
+
+        <!-- Gráfico de Comparação de Tópicos -->
+        <div class="mt-6 bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)]">
+          <div class="px-6 py-4 border-b border-[#E1E9F4]">
+            <h3 class="text-lg font-medium text-[#373753]">
+              Tópicos de reclamações
+            </h3>
           </div>
-
-          <!-- Adicionando o divisor -->
-          <hr class="border-t border-gray-200 mb-6 -mx-6">
-
-          <div class="space-y-3">
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😀</span>
-                Promotores
-              </span>
-              <span class="font-medium">{{ currentStats.supervisor.promoters }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😐</span>
-                Neutros
-              </span>
-              <span class="font-medium">{{ currentStats.supervisor.neutrals }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😡</span>
-                Detratores
-              </span>
-              <span class="font-medium">{{ currentStats.supervisor.detractors }}</span>
-            </div>
-            <div class="pt-6 border-t">
-              <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
-              <div class="h-[60px] w-full chart-grid-bg">
-                <Line :data="supervisorChartData" :options="miniChartOptions" />
-              </div>
+          <div class="p-6 h-[400px]">
+            <Line v-if="getChartData.labels.length > 0" :data="chartData" :options="chartOptions" />
+            <div v-else class="flex items-center justify-center h-full text-gray-500">
+              Nenhum dado disponível para o período selecionado
             </div>
           </div>
         </div>
 
-        <!-- Card do Agente -->
-        <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)] px-6 py-6 card-padding">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-medium text-[#373753]">Agente</h3>
-            <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded-lg">
-              {{ currentStats.agente.nps }}% NPS
-            </span>
-          </div>
-
-          <!-- Adicionando o divisor -->
-          <hr class="border-t border-gray-200 mb-6 -mx-6">
-
-          <div class="space-y-3">
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😀</span>
-                Promotores
-              </span>
-              <span class="font-medium">{{ currentStats.agente.promoters }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😐</span>
-                Neutros
-              </span>
-              <span class="font-medium">{{ currentStats.agente.neutrals }}</span>
-            </div>
-            <div class="flex justify-between text-sm">
-              <span class="text-gray-500 flex items-center gap-2">
-                <span class="text-lg">😡</span>
-                Detratores
-              </span>
-              <span class="font-medium">{{ currentStats.agente.detractors }}</span>
-            </div>
-            <div class="pt-6 border-t">
-              <p class="text-sm text-gray-500 mb-2">Tendência do NPS</p>
-              <div class="h-[60px] w-full chart-grid-bg">
-                <Line :data="agenteChartData" :options="miniChartOptions" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Recomendações gerais -->
-      <div v-if="insights?.recommendations?.length" class="col-span-full mt-6 bg-white rounded-lg shadow p-6">
-        <h3 class="text-lg font-semibold mb-4">Recomendações Gerais</h3>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-for="(rec, i) in insights.recommendations" 
-               :key="i" 
-               class="bg-gray-50 p-4 rounded-lg">
-            <p class="text-gray-700">{{ rec }}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Espaçamento entre seções -->
-    <!-- Removido o espaçamento adicional -->
-
-    <!-- Gráfico de Comparação de Tópicos -->
-    <div class="mt-6 bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)]">
-      <div class="px-6 py-4 border-b border-[#E1E9F4]">
-        <h3 class="text-lg font-medium text-[#373753]">
-          Tópicos de reclamações
-        </h3>
-      </div>
-      <div class="p-6 h-[400px]">
-        <Line v-if="getChartData.labels.length > 0" :data="chartData" :options="chartOptions" />
-        <div v-else class="flex items-center justify-center h-full text-gray-500">
-          Nenhum dado disponível para o período selecionado
-        </div>
-      </div>
-    </div>
-
-    <!-- Seção de Análise de Reclamações -->
-    <div class="mt-6 bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)]">
-      <div class="px-6 py-4 border-b border-[#E1E9F4] flex justify-between items-center">
-        <h3 class="text-lg font-medium text-[#373753]">Análise de Reclamações</h3>
-        
-        <!-- Tabs de filtro -->
-        <div class="flex space-x-2">
-          <button 
-            @click="activeFilter = 'Suporte'" 
-            class="px-4 py-1.5 rounded-full text-sm"
-            :class="activeFilter === 'Suporte' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
-          >
-            Suporte
-          </button>
-          <button 
-            @click="activeFilter = 'Instabilidade'" 
-            class="px-4 py-1.5 rounded-full text-sm"
-            :class="activeFilter === 'Instabilidade' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
-          >
-            Instabilidade
-          </button>
-          <button 
-            @click="activeFilter = 'Problemas com mailing'" 
-            class="px-4 py-1.5 rounded-full text-sm"
-            :class="activeFilter === 'Problemas com mailing' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
-          >
-            Problemas com mailing
-          </button>
-        </div>
-      </div>
-      
-      <!-- Carrossel de cards com os meses -->
-      <div class="relative p-6">
-        <!-- Botão para navegar para meses mais antigos (retroceder) -->
-        <button 
-          v-if="hasMultipleSlides"
-          @click="prevSlide" 
-          :disabled="currentSlide === 0"
-          class="absolute left-1 top-1/2 transform -translate-y-1/2 z-10 bg-white rounded-full p-2 shadow-md"
-          :class="{ 'opacity-50 cursor-not-allowed': currentSlide === 0 }"
-          title="Ver meses anteriores (mais antigos)"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        
-        <!-- Container do carrossel com a transição -->
-        <div class="relative overflow-hidden">
-          <div 
-            class="flex transition-all duration-500 ease-in-out" 
-            :style="{ transform: `translateX(-${currentSlide * 100}%)` }"
-          >
-            <!-- Cada página do carrossel -->
-            <div 
-              v-for="(page, pageIndex) in groupedMonths" 
-              :key="'page-' + pageIndex"
-              class="w-full flex-shrink-0 grid grid-cols-4 gap-4"
-            >
-              <!-- Cards de meses dentro de cada página -->
-              <div 
-                v-for="(month, monthIndex) in page" 
-                :key="month.month + '-' + monthIndex"
-                class="bg-white rounded-lg border border-[#E1E9F4] shadow-sm"
+        <!-- Seção de Análise de Reclamações -->
+        <div class="mt-6 bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(18,38,63,0.03)]">
+          <div class="px-6 py-4 border-b border-[#E1E9F4] flex justify-between items-center">
+            <h3 class="text-lg font-medium text-[#373753]">Análise de Reclamações</h3>
+            
+            <!-- Tabs de filtro -->
+            <div class="flex space-x-2">
+              <button 
+                @click="activeFilter = 'Suporte'" 
+                class="px-4 py-1.5 rounded-full text-sm"
+                :class="activeFilter === 'Suporte' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
               >
-                <div class="p-4">
-                  <div class="flex justify-between items-center">
-                    <h4 class="font-medium text-[#373753]">{{ month.month }}</h4>
-                    <div class="flex items-center">
-                      <p class="text-base font-bold text-[#373753]">{{ month.count }}</p>
-                      <span class="ml-2 text-sm text-[#677C92]">{{ month.count === 1 ? 'Relato' : 'Relatos' }}</span>
+                Suporte
+              </button>
+              <button 
+                @click="activeFilter = 'Instabilidade'" 
+                class="px-4 py-1.5 rounded-full text-sm"
+                :class="activeFilter === 'Instabilidade' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
+              >
+                Instabilidade
+              </button>
+              <button 
+                @click="activeFilter = 'Problemas com mailing'" 
+                class="px-4 py-1.5 rounded-full text-sm"
+                :class="activeFilter === 'Problemas com mailing' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-700'"
+              >
+                Problemas com mailing
+              </button>
+            </div>
+          </div>
+          
+          <!-- Carrossel de cards com os meses -->
+          <div class="relative p-6">
+            <!-- Botão para navegar para meses mais antigos (retroceder) -->
+            <button 
+              v-if="hasMultipleSlides"
+              @click="prevSlide" 
+              :disabled="currentSlide === 0"
+              class="absolute left-1 top-1/2 transform -translate-y-1/2 z-10 bg-white rounded-full p-2 shadow-md"
+              :class="{ 'opacity-50 cursor-not-allowed': currentSlide === 0 }"
+              title="Ver meses anteriores (mais antigos)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            
+            <!-- Container do carrossel com a transição -->
+            <div class="relative overflow-hidden">
+              <div 
+                class="flex transition-all duration-500 ease-in-out" 
+                :style="{ transform: `translateX(-${currentSlide * 100}%)` }"
+              >
+                <!-- Cada página do carrossel -->
+                <div 
+                  v-for="(page, pageIndex) in groupedMonths" 
+                  :key="'page-' + pageIndex"
+                  class="w-full flex-shrink-0 grid grid-cols-4 gap-4"
+                >
+                  <!-- Cards de meses dentro de cada página -->
+                  <div 
+                    v-for="(month, monthIndex) in page" 
+                    :key="month.month + '-' + monthIndex"
+                    class="bg-white rounded-lg border border-[#E1E9F4] shadow-sm"
+                  >
+                    <div class="p-4">
+                      <div class="flex justify-between items-center">
+                        <h4 class="font-medium text-[#373753]">{{ month.month }}</h4>
+                        <div class="flex items-center">
+                          <p class="text-base font-bold text-[#373753]">{{ month.count }}</p>
+                          <span class="ml-2 text-sm text-[#677C92]">{{ month.count === 1 ? 'Relato' : 'Relatos' }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <hr class="border-t border-gray-200">
+                    <div class="p-4 mt-2 space-y-2 overflow-y-auto max-h-56 custom-scroll">
+                      <div v-if="month.comments.length === 0" class="text-sm text-gray-400 text-center p-2">
+                        Nenhum relato neste período
+                      </div>
+                      <div v-for="(comment, i) in month.comments" :key="i" class="text-sm text-gray-600 bg-red-50 p-2 rounded">
+                        {{ comment }}
+                      </div>
                     </div>
                   </div>
                 </div>
-                <hr class="border-t border-gray-200">
-                <div class="p-4 mt-2 space-y-2 overflow-y-auto max-h-56 custom-scroll">
-                  <div v-if="month.comments.length === 0" class="text-sm text-gray-400 text-center p-2">
-                    Nenhum relato neste período
-                  </div>
-                  <div v-for="(comment, i) in month.comments" :key="i" class="text-sm text-gray-600 bg-red-50 p-2 rounded">
-                    {{ comment }}
-                  </div>
-                </div>
               </div>
             </div>
+            
+            <!-- Botão para navegar para meses mais recentes (avançar) -->
+            <button 
+              v-if="hasMultipleSlides"
+              @click="nextSlide"
+              :disabled="currentSlide >= totalPages - 1"
+              class="absolute right-1 top-1/2 transform -translate-y-1/2 z-10 bg-white rounded-full p-2 shadow-md"
+              :class="{ 'opacity-50 cursor-not-allowed': currentSlide >= totalPages - 1 }"
+              title="Ver meses mais recentes"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            
+            <!-- Indicadores de página (bolinhas) -->
+            <div v-if="totalPages > 1" class="flex justify-center mt-6 space-x-3">
+              <button 
+                v-for="index in totalPages" 
+                :key="index"
+                @click="goToPage(index - 1)"
+                aria-label="Página do carrossel"
+                class="w-3 h-3 rounded-full transition-all duration-300 focus:outline-none"
+                :class="currentSlide === index - 1 ? 'bg-blue-500' : 'bg-gray-300 hover:bg-gray-400'"
+              ></button>
+            </div>
           </div>
-        </div>
-        
-        <!-- Botão para navegar para meses mais recentes (avançar) -->
-        <button 
-          v-if="hasMultipleSlides"
-          @click="nextSlide"
-          :disabled="currentSlide >= totalPages - 1"
-          class="absolute right-1 top-1/2 transform -translate-y-1/2 z-10 bg-white rounded-full p-2 shadow-md"
-          :class="{ 'opacity-50 cursor-not-allowed': currentSlide >= totalPages - 1 }"
-          title="Ver meses mais recentes"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
-        
-        <!-- Indicadores de página (bolinhas) -->
-        <div v-if="totalPages > 1" class="flex justify-center mt-6 space-x-3">
-          <button 
-            v-for="index in totalPages" 
-            :key="index"
-            @click="goToPage(index - 1)"
-            aria-label="Página do carrossel"
-            class="w-3 h-3 rounded-full transition-all duration-300 focus:outline-none"
-            :class="currentSlide === index - 1 ? 'bg-blue-500' : 'bg-gray-300 hover:bg-gray-400'"
-          ></button>
         </div>
       </div>
     </div>
@@ -1070,5 +1155,48 @@ button:focus-visible {
 
 .hover\:bg-gray-400:hover {
   background-color: #9ca3af;
+}
+
+/* Estilos adicionais para a tabela */
+.table-container {
+  @apply overflow-x-auto;
+  border: 1px solid #E1E9F4;
+  border-radius: 0.5rem;
+}
+
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+th, td {
+  border-bottom: 1px solid #E1E9F4;
+}
+
+th:first-child {
+  border-top-left-radius: 0.5rem;
+}
+
+th:last-child {
+  border-top-right-radius: 0.5rem;
+}
+
+tr:last-child td:first-child {
+  border-bottom-left-radius: 0.5rem;
+}
+
+tr:last-child td:last-child {
+  border-bottom-right-radius: 0.5rem;
+}
+
+/* Estilo para o tooltip */
+:deep(.chartjs-tooltip) {
+  background-color: white !important;
+  border: 1px solid #E1E9F4 !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+  color: #1F2937 !important;
+  font-size: 12px !important;
+  padding: 8px 12px !important;
 }
 </style>

@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useFeedbackStore } from '../stores/feedback'
 import { subMonths, isAfter, parseISO } from 'date-fns'
 import { XMarkIcon } from '@heroicons/vue/24/outline'
 
 interface FeedbackData {
-  company_id: string
   user_id: string
   score: number
   reason: string
-  role: string
   created_at: string
+  company_id: string
+  company_name: string
+  role: string
+  _uid?: string
 }
 
 interface ComplaintCount {
@@ -28,16 +30,26 @@ interface RoleStats {
 }
 
 interface Empresa {
+  company_id: string
   nome: string
   maiorReclamacao: string
   maiorReclamacaoCompleta: string
   nps: number
   totalAvaliacoes: number
+  feedbacks: FeedbackData[]
   insights?: string
   planoAcao?: string
   detalhes?: {
     avaliacoesNegativas: ComplaintCount[]
     roleBreakdown: Record<string, RoleStats>
+    notasClicadas: {
+      score: number
+      reason: string
+      role: string
+      created_at: string
+      company_id: string
+      user_id: string
+    }[]
   }
   analysisData?: any
 }
@@ -64,6 +76,9 @@ const searchQuery = ref('')
 const showDetailsModal = ref(false)
 const empresasAnalisadas = ref<Empresa[]>([])
 const selectedEmpresaDetails = ref<Empresa | null>(null)
+
+// Usar os filtros atuais do store
+const currentFilters = computed(() => feedbackStore.currentFilters)
 
 // Função para categorizar reclamações
 const categorizarReclamacao = (texto: string): string => {
@@ -104,119 +119,89 @@ const isValidText = (text: string): boolean => {
 const prepareDataForAnalysis = () => {
   const fourMonthsAgo = subMonths(new Date(), 4)
   
-  const empresasMap = new Map<string, {
-    feedbacks: FeedbackData[],
-    reclamacoes: Map<string, ComplaintCount>
-  }>()
+  // Usar dados filtrados se disponíveis, senão usar todos os dados
+  const sourceData = feedbackStore.filteredData.length > 0 
+    ? feedbackStore.filteredData 
+    : feedbackStore.feedbackData
 
-  // Processa feedbacks e agrupa reclamações
-  feedbackStore.feedbackData
-    .filter(feedback => isAfter(parseISO(feedback.created_at), fourMonthsAgo))
-    .forEach(feedback => {
-      if (!empresasMap.has(feedback.company_id)) {
-        empresasMap.set(feedback.company_id, {
-          feedbacks: [],
-          reclamacoes: new Map()
-        })
+  // Primeiro, agrupar todos os feedbacks por ID da empresa
+  const feedbacksByCompany = sourceData
+    .filter(feedback => 
+      isAfter(parseISO(feedback.created_at), fourMonthsAgo) && 
+      feedback.company_name && // Garantir que tem nome da empresa
+      feedback.company_name !== 'Empresa sem nome' && // Ignorar empresas sem nome
+      !feedback.company_name.toLowerCase().includes('seller') // Ignorar empresa Seller
+    )
+    .reduce((acc, feedback) => {
+      const id = feedback.company_id
+      if (!acc[id]) {
+        acc[id] = []
       }
-
-      const empresa = empresasMap.get(feedback.company_id)!
-      empresa.feedbacks.push(feedback)
-
-      // Processa reclamações com mais detalhes
-      if (feedback.score <= 6 && feedback.reason?.trim()) {
-        const reclamacao = feedback.reason.trim()
-        const reclamacaoAtual = empresa.reclamacoes.get(reclamacao) || {
-          count: 0,
-          score: feedback.score,
-          role: feedback.role,
-          data: feedback.created_at,
-          texto: reclamacao
-        }
-        
-        empresa.reclamacoes.set(reclamacao, {
-          ...reclamacaoAtual,
-          count: reclamacaoAtual.count + 1
-        })
+      // Verificar se o feedback já existe para evitar duplicatas
+      const isDuplicate = acc[id].some(f => 
+        f.user_id === feedback.user_id && 
+        f.created_at === feedback.created_at
+      )
+      if (!isDuplicate) {
+        acc[id].push(feedback)
       }
-    })
+      return acc
+    }, {} as Record<string, FeedbackData[]>)
 
-  // Processa e retorna dados estruturados
-  return Array.from(empresasMap.entries())
-    .map(([companyId, data]) => {
-      const reclamacoesSorted = Array.from(data.reclamacoes.entries())
-        .filter(([texto, _]) => isValidText(texto))
-        .sort((a, b) => b[1].count - a[1].count)
+  // Processar cada empresa uma única vez
+  empresasAnalisadas.value = Object.entries(feedbacksByCompany)
+    .map(([companyId, feedbacks]): Empresa | null => {
+      // Pegar o nome mais recente da empresa
+      const bestName = feedbacks
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+        ?.company_name || ''
 
-      // Verificar se existem reclamações antes de acessar
-      if (reclamacoesSorted.length === 0) {
-        const total = data.feedbacks.length
-        const promotores = data.feedbacks.filter(f => f.score >= 9).length
-        const detratores = data.feedbacks.filter(f => f.score <= 6).length
-        const nps = Math.round(((promotores - detratores) / total) * 100)
+      // Se não tiver nome válido, pular esta empresa
+      if (!bestName) return null
 
-        // Modificar para incluir TODAS as reclamações negativas, não apenas algumas
-        const avaliacoesBasicas = data.feedbacks
-          .filter(f => f.score <= 6 && f.reason && f.reason.trim().length > 3)
-          .map(f => ({
-            texto: f.reason,
-            score: f.score,
-            role: f.role,
-            data: f.created_at,
-            count: 1
-          }));
-
-        return {
-          nome: companyId,
-          maiorReclamacao: 'Sem reclamações',
-          maiorReclamacaoCompleta: '',
-          nps,
-          totalAvaliacoes: total,
-          detalhes: {
-            avaliacoesNegativas: avaliacoesBasicas,
-            roleBreakdown: processRoleBreakdown(data.feedbacks)
-          },
-          planoAcao: 'Sem plano de ação necessário.'
-        }
-      }
-
-      const maiorReclamacao = reclamacoesSorted[0]
-      const total = data.feedbacks.length
-      const promotores = data.feedbacks.filter(f => f.score >= 9).length
-      const detratores = data.feedbacks.filter(f => f.score <= 6).length
+      // Calcular métricas
+      const total = feedbacks.length
+      const promotores = feedbacks.filter(f => f.score >= 9).length
+      const detratores = feedbacks.filter(f => f.score <= 6).length
       const nps = Math.round(((promotores - detratores) / total) * 100)
 
-      // Tenta categorizar a reclamação
-      const maiorReclamacaoResumida = maiorReclamacao 
-        ? categorizarReclamacao(maiorReclamacao[1].texto)
-        : null
-      
-      // Se não foi possível categorizar, retorna null para filtrar depois
-      if (maiorReclamacaoResumida === 'N/A') {
-        return null
-      }
+      // Processar reclamações
+      const reclamacoes = feedbacks
+        .filter(f => f.score <= 6 && f.reason?.trim())
+        .reduce((acc, f) => {
+          const texto = f.reason.trim()
+          if (!acc[texto]) {
+            acc[texto] = { count: 0, texto, score: f.score, role: f.role, data: f.created_at }
+          }
+          acc[texto].count++
+          return acc
+        }, {} as Record<string, ComplaintCount>)
+
+      // Ordenar reclamações por contagem
+      const reclamacoesSorted = Object.values(reclamacoes)
+        .sort((a, b) => b.count - a.count)
+
+      const maiorReclamacao = reclamacoesSorted.length > 0
+        ? categorizarReclamacao(reclamacoesSorted[0].texto)
+        : 'Sem reclamações'
 
       return {
-        nome: companyId,
-        maiorReclamacao: maiorReclamacaoResumida || 'Outros',
-        maiorReclamacaoCompleta: maiorReclamacao ? maiorReclamacao[1].texto : '',
-        nps,
+        company_id: companyId,
+        nome: bestName,
+        feedbacks,
+        maiorReclamacao,
+        maiorReclamacaoCompleta: reclamacoesSorted[0]?.texto || '',
         totalAvaliacoes: total,
+        nps,
         detalhes: {
-          avaliacoesNegativas: reclamacoesSorted.map(([_, info]) => ({
-            texto: info.texto,
-            score: info.score,
-            role: info.role,
-            data: info.data,
-            count: info.count
-          })),
-          roleBreakdown: processRoleBreakdown(data.feedbacks)
+          avaliacoesNegativas: reclamacoesSorted,
+          roleBreakdown: processRoleBreakdown(feedbacks)
         }
-      }
+      } as Empresa
     })
-    .filter(empresa => empresa !== null) // Remove as empresas sem categorização
-    .filter(empresa => empresa.totalAvaliacoes >= 5) // Mantém o filtro mínimo de avaliações
-    .sort((a, b) => a.nps - b.nps) // Mantém a ordenação do pior para o melhor
+    .filter((empresa): empresa is Empresa => empresa !== null)
+    .filter(empresa => empresa.totalAvaliacoes >= 5)
+    .sort((a, b) => a.nps - b.nps)
 }
 
 // Função para calcular NPS por função
@@ -266,21 +251,131 @@ const truncateText = (text: string, limit: number = 50) => {
   return text.length > limit ? text.substring(0, limit) + '...' : text
 }
 
-const filteredEmpresas = computed(() => {
-  // Se não houver dados, retorna array vazio
-  if (feedbackStore.feedbackData.length === 0) return []
-  
-  // Prepara os dados para análise
-  const empresas = prepareDataForAnalysis()
-  
-  // Aplica o filtro de busca
+// Substituir o processamento em chunks por uma versão funcional
+const processEmpresas = (data: FeedbackData[]) => {
+  const fourMonthsAgo = subMonths(new Date(), 4)
+  const empresasMap = new Map<string, {
+    feedbacks: FeedbackData[],
+    empresa: Empresa | null
+  }>()
+
+  // Primeiro passo: agrupar feedbacks por empresa
+  data.forEach(feedback => {
+    if (!isAfter(parseISO(feedback.created_at), fourMonthsAgo)) return
+    if (!feedback.company_name) return
+    if (feedback.company_name === 'Empresa sem nome') return
+    if (feedback.company_name.toLowerCase().includes('seller')) return
+
+    const key = feedback.company_id
+    if (!empresasMap.has(key)) {
+      empresasMap.set(key, {
+        feedbacks: [],
+        empresa: null
+      })
+    }
+    empresasMap.get(key)?.feedbacks.push(feedback)
+  })
+
+  // Segundo passo: processar cada empresa
+  const empresas = Array.from(empresasMap.entries()).map(([companyId, data]): Empresa | null => {
+    const feedbacks = data.feedbacks
+    if (feedbacks.length < 5) return null // Ignorar empresas com menos de 5 feedbacks
+
+    // Pegar o nome mais recente da empresa
+    const bestName = feedbacks
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+      ?.company_name || ''
+
+    // Calcular métricas
+    const total = feedbacks.length
+    const promotores = feedbacks.filter(f => f.score >= 9).length
+    const detratores = feedbacks.filter(f => f.score <= 6).length
+    const nps = Math.round(((promotores - detratores) / total) * 100)
+
+    // Processar reclamações
+    const reclamacoes = feedbacks
+      .filter(f => f.score <= 6 && f.reason?.trim())
+      .reduce((acc, f) => {
+        const texto = f.reason.trim()
+        if (!acc[texto]) {
+          acc[texto] = { count: 0, texto, score: f.score, role: f.role, data: f.created_at }
+        }
+        acc[texto].count++
+        return acc
+      }, {} as Record<string, ComplaintCount>)
+
+    const reclamacoesSorted = Object.values(reclamacoes)
+      .sort((a, b) => b.count - a.count)
+
+    return {
+      company_id: companyId,
+      nome: bestName,
+      feedbacks,
+      maiorReclamacao: reclamacoesSorted.length > 0 
+        ? categorizarReclamacao(reclamacoesSorted[0].texto)
+        : 'Sem reclamações',
+      maiorReclamacaoCompleta: reclamacoesSorted[0]?.texto || '',
+      totalAvaliacoes: total,
+      nps,
+      detalhes: {
+        avaliacoesNegativas: reclamacoesSorted,
+        roleBreakdown: processRoleBreakdown(feedbacks)
+      }
+    }
+  }).filter((empresa): empresa is Empresa => empresa !== null)
+    .sort((a, b) => a.nps - b.nps)
+
+  return empresas
+}
+
+// Cache de resultados processados
+const processedResultsCache = new Map()
+
+// Computed otimizado com cache
+const processedEmpresas = computed(() => {
+  const cacheKey = JSON.stringify({
+    data: feedbackStore.filteredData.length,
+    filters: feedbackStore.currentFilters
+  })
+
+  if (processedResultsCache.has(cacheKey)) {
+    return processedResultsCache.get(cacheKey)
+  }
+
+  const result = processEmpresas(feedbackStore.filteredData.length > 0 
+    ? feedbackStore.filteredData 
+    : feedbackStore.feedbackData)
+  processedResultsCache.set(cacheKey, result)
+  return result
+})
+
+// Computed para empresas filtradas
+const empresasFiltradas = computed(() => {
+  if (!searchQuery.value.trim()) {
+    return processedEmpresas.value
+  }
+
   const query = searchQuery.value.toLowerCase().trim()
-  if (!query) return empresas
-  
-  return empresas.filter(empresa => 
-    empresa.nome.toLowerCase().includes(query) ||
-    empresa.maiorReclamacao.toLowerCase().includes(query)
-  )
+  return processedEmpresas.value.filter(empresa => {
+    return (
+      // Busca por nome da empresa
+      empresa.nome.toLowerCase().includes(query) ||
+      // Busca por ID
+      empresa.company_id.toString().includes(query) ||
+      // Busca por reclamação
+      empresa.maiorReclamacao.toLowerCase().includes(query) ||
+      // Busca por NPS
+      empresa.nps.toString().includes(query) ||
+      // Busca nas avaliações negativas
+      empresa.detalhes?.avaliacoesNegativas.some(av => 
+        av.texto.toLowerCase().includes(query)
+      ) ||
+      // Busca por cargos
+      Object.keys(empresa.detalhes?.roleBreakdown || {}).some(role =>
+        role.toLowerCase().includes(query)
+      )
+    )
+  })
 })
 
 const showPlainData = (empresa: any) => {
@@ -299,13 +394,37 @@ const showPlainData = (empresa: any) => {
 const handleVerDetalhes = (empresa: Empresa) => {
   selectedEmpresaDetails.value = empresa
   
-  // Verifica se há reclamações, se não houver, cria algumas com base nos feedbacks
-  if (!empresa.detalhes?.avaliacoesNegativas?.length) {
-    // Encontrar a empresa original nos dados do store
-    const companyData = feedbackStore.feedbackData.filter(f => f.company_id === empresa.nome);
-    
-    // Criar reclamações diretamente dos feedbacks negativos
-    const reclamacoes = companyData
+  // Buscar todos os feedbacks da empresa, incluindo as notas
+  const allCompanyFeedbacks = feedbackStore.feedbackData.filter(f => 
+    f.company_id === empresa.company_id && 
+    isAfter(parseISO(f.created_at), subMonths(new Date(), 4))
+  )
+
+  // Processar notas clicadas
+  const notasClicadas = allCompanyFeedbacks
+    .filter(f => f.score)
+    .map(f => ({
+      score: f.score,
+      reason: f.reason || '',
+      role: f.role,
+      created_at: f.created_at,
+      company_id: f.company_id,
+      user_id: f.user_id
+    }))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+
+  // Atualizar detalhes da empresa
+  empresa.detalhes = empresa.detalhes || {
+    avaliacoesNegativas: [],
+    roleBreakdown: {},
+    notasClicadas: []
+  }
+
+  empresa.detalhes.notasClicadas = notasClicadas
+
+  // Processar reclamações negativas
+  if (!empresa.detalhes.avaliacoesNegativas?.length) {
+    const reclamacoes = allCompanyFeedbacks
       .filter(f => f.score <= 6 && f.reason && f.reason.trim().length > 3)
       .map(f => ({
         texto: f.reason,
@@ -313,28 +432,18 @@ const handleVerDetalhes = (empresa: Empresa) => {
         role: f.role,
         data: f.created_at,
         count: 1
-      }));
-    
-    // Adicionar as reclamações ao objeto da empresa
+      }))
+
     if (reclamacoes.length > 0) {
-      if (!empresa.detalhes) empresa.detalhes = { avaliacoesNegativas: [], roleBreakdown: {} };
-      empresa.detalhes.avaliacoesNegativas = reclamacoes;
+      empresa.detalhes.avaliacoesNegativas = reclamacoes
     }
   }
-  
-  // Garantir que o objeto de detalhes exista
-  if (!empresa.detalhes) {
-    empresa.detalhes = { 
-      avaliacoesNegativas: [], 
-      roleBreakdown: {} 
-    };
+
+  // Ordenar avaliações negativas
+  if (empresa.detalhes.avaliacoesNegativas) {
+    empresa.detalhes.avaliacoesNegativas.sort((a, b) => (b.count || 1) - (a.count || 1))
   }
 
-  // Garantir que avaliacoesNegativas esteja ordenado por número de ocorrências
-  if (empresa.detalhes.avaliacoesNegativas) {
-    empresa.detalhes.avaliacoesNegativas.sort((a, b) => (b.count || 1) - (a.count || 1));
-  }
-  
   showDetailsModal.value = true
 }
 
@@ -399,39 +508,169 @@ const analyzeUsers = (feedbacks: FeedbackData[]): Map<string, UserComplaint> => 
   return userComplaints
 }
 
-// Verifica se há pelo menos uma nota registrada
-const hasAnyScores = (companyId: string): boolean => {
-  if (!companyId) return false;
-  return Array.from({length: 10}, (_, i) => i + 1).some(score => 
-    countNotesByScore(companyId, score) > 0
-  );
-}
-
-// Adicionar junto às outras funções
+// Atualizar a função countNotesByScore
 const countNotesByScore = (companyId: string, score: number): number => {
   if (!companyId) return 0;
-  return feedbackStore.feedbackData.filter(
-    feedback => feedback.company_id === companyId && feedback.score === score
-  ).length;
+  
+  // Pegar a empresa dos dados analisados
+  const empresa = empresasAnalisadas.value.find(e => e.company_id === companyId);
+  if (!empresa) return 0;
+
+  // Contar as notas usando os feedbacks da empresa
+  return empresa.feedbacks.filter(f => f.score === score).length;
+}
+
+// Atualizar a função hasAnyScores
+const hasAnyScores = (companyId: string): boolean => {
+  if (!companyId) return false;
+  
+  // Pegar a empresa dos dados analisados
+  const empresa = empresasAnalisadas.value.find(e => e.company_id === companyId);
+  if (!empresa) return false;
+
+  // Verificar se tem alguma nota
+  return empresa.feedbacks.length > 0;
+}
+
+// Computed properties para calcular os tipos de empresas
+const empresasPromotoras = computed(() => {
+  return empresasAnalisadas.value.filter(empresa => empresa.nps >= 50).length
+})
+
+const empresasNeutras = computed(() => {
+  return empresasAnalisadas.value.filter(empresa => empresa.nps >= 0 && empresa.nps < 50).length
+})
+
+const empresasDetratoras = computed(() => {
+  return empresasAnalisadas.value.filter(empresa => empresa.nps < 0).length
+})
+
+// Atualizar os watches e onMounted
+onMounted(() => {
+  // Manter o prepareDataForAnalysis pois é específico para esta view
+  prepareDataForAnalysis()
+})
+
+// Atualizar o watch para processar os dados quando mudarem
+watch(() => feedbackStore.filteredData, () => {
+  searchQuery.value = ''
+  prepareDataForAnalysis()
+}, { deep: true })
+
+// Também observar feedbackData para casos onde não há filtros
+watch(() => feedbackStore.feedbackData, () => {
+  if (feedbackStore.filteredData.length === 0) {
+    searchQuery.value = ''
+    prepareDataForAnalysis()
+  }
+}, { deep: true })
+
+// Simplificar o watch do searchQuery
+watch(searchQuery, (newValue) => {
+  // Apenas sanitizar a entrada
+  if (newValue) {
+    searchQuery.value = newValue.replace(/[^\w\sÀ-ÿ]/gi, '').slice(0, 50)
+  }
+})
+
+// Função para contar os clicks por nota
+const getNotasClicadas = (empresa: Empresa | null) => {
+  if (!empresa?.feedbacks) return [];
+  
+  // Criar um mapa para contar as ocorrências de cada nota
+  const notasMap = empresa.feedbacks.reduce((acc, feedback) => {
+    acc[feedback.score] = (acc[feedback.score] || 0) + 1;
+    return acc;
+  }, {} as Record<number, number>);
+  
+  // Converter para array e ordenar
+  return Object.entries(notasMap)
+    .map(([score, count]) => ({
+      score: Number(score),
+      count
+    }))
+    .sort((a, b) => a.score - b.score);
 }
 </script>
 
 <template>
   <div>
+    <!-- Card de Tipos de Empresas -->
+    <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(23,18,63,0.03)] mb-6">
+      <!-- Cabeçalho com título -->
+      <div class="px-6 pt-4 pb-3">
+        <h2 class="text-lg font-medium text-[#373753]">NPS das empresas</h2>
+      </div>
+
+      <!-- Divider -->
+      <div class="h-px bg-[#E1E9F4]"></div>
+
+      <!-- Conteúdo do card -->
+      <div class="px-6 py-4">
+        <div class="flex items-center justify-between">
+          <!-- Promotores -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-lg">😊</span>
+              <p class="text-[18px] font-normal text-[#677C92]">Promotores</p>
+            </div>
+            <p class="text-2xl font-medium text-emerald-500">
+              {{ empresasPromotoras }}
+            </p>
+          </div>
+
+          <!-- Neutros -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-lg">😐</span>
+              <p class="text-[18px] font-normal text-[#677C92]">Neutros</p>
+            </div>
+            <p class="text-2xl font-medium text-yellow-500">
+              {{ empresasNeutras }}
+            </p>
+          </div>
+
+          <!-- Detratores -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-lg" style="color: #EF4444">😡</span>
+              <p class="text-[18px] font-normal text-[#677C92]">Detratores</p>
+            </div>
+            <p class="text-2xl font-medium text-red-500">
+              {{ empresasDetratoras }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tabela com borda -->
     <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(23,18,63,0.03)]">
-      <!-- Cabeçalho com título e busca dentro da tabela -->
+      <!-- Cabeçalho com busca -->
       <div class="px-6 py-4 flex justify-between items-center">
-        <h1 class="text-lg font-medium text-[#373753]">
-          Ranking de Empresas
-        </h1>
-        <div class="flex space-x-4">
-          <input
-            type="text"
-            v-model="searchQuery"
-            placeholder="Pesquisar empresa..."
-            class="w-64 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+        <div class="flex items-center gap-2 flex-1">
+          <div class="relative flex-1">
+            <input
+              type="text"
+              v-model="searchQuery"
+              placeholder="Buscar empresas"
+              class="w-full px-4 py-2 pl-10 pr-4 text-gray-700 bg-transparent focus:outline-none"
+            />
+            <svg 
+              class="absolute left-0 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-500"
+              xmlns="http://www.w3.org/2000/svg" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke="currentColor"
+            >
+              <path 
+                stroke-linecap="round" 
+                stroke-linejoin="round" 
+                stroke-width="2" 
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" 
+              />
+            </svg>
+          </div>
         </div>
       </div>
 
@@ -443,36 +682,36 @@ const countNotesByScore = (companyId: string, score: number): number => {
         <table class="min-w-full divide-y divide-gray-200">
           <thead class="bg-[#F0F4FA]">
             <tr>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Empresa/ID</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Maior Reclamação</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Avaliações</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Empresa</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MAIOR RECLAMAÇÃO</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">TOTAL AVALIAÇÕES</th>
               <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NPS</th>
             </tr>
           </thead>
           <tbody class="bg-white divide-y divide-gray-200">
-            <tr v-for="empresa in filteredEmpresas" :key="empresa.nome" class="hover:bg-gray-50 group">
-              <td class="px-6 py-4 whitespace-nowrap">
-                <div class="text-sm font-medium text-gray-900">{{ empresa.nome }}</div>
+            <tr v-for="empresa in empresasFiltradas" 
+                :key="empresa.company_id" 
+                class="hover:bg-gray-50 group">
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                {{ empresa.company_id }}
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {{ empresa.maiorReclamacao }}
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" :title="empresa.nome">
+                {{ empresa.nome?.length > 30 ? empresa.nome.substring(0, 30) + '...' : empresa.nome }}
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <div class="text-sm text-gray-900">{{ empresa.totalAvaliacoes }}</div>
-              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ empresa.maiorReclamacao }}</td>
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ empresa.totalAvaliacoes }}</td>
               <td class="px-6 py-4 whitespace-nowrap flex items-center justify-between">
-                <span 
-                  class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
-                  :class="{
-                    'bg-red-100 text-red-800': empresa.nps < 0,
-                    'bg-yellow-100 text-yellow-800': empresa.nps >= 0 && empresa.nps < 50,
-                    'bg-green-100 text-green-800': empresa.nps >= 50
-                  }"
-                >
+                <span :class="{
+                  'px-2 py-1 text-xs font-medium rounded-full': true,
+                  'bg-red-100 text-red-800': empresa.nps < 0,
+                  'bg-yellow-100 text-yellow-800': empresa.nps >= 0 && empresa.nps < 50,
+                  'bg-green-100 text-green-800': empresa.nps >= 50
+                }">
                   {{ empresa.nps }}% NPS
                 </span>
                 <button
-                  @click="handleVerDetalhes(empresa)"
+                  @click.stop="handleVerDetalhes(empresa)"
                   class="ml-4 px-3 py-1 border border-blue-500 text-blue-600 rounded-md hover:bg-blue-50 text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity duration-200"
                 >
                   Ver Detalhes
@@ -521,56 +760,33 @@ const countNotesByScore = (companyId: string, score: number): number => {
               <div class="bg-white p-4 rounded-lg border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(23,18,63,0.03)]">
                 <div class="flex items-center gap-2 mb-2">
                   <svg width="18" height="18" viewBox="0 0 18 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <g clip-path="url(#clip0_22074_34970)">
-                      <path d="M9 10.5H2.25V16.5C2.25 19.4016 4.59844 21.75 7.5 21.75H10.5C13.4016 21.75 15.75 19.4016 15.75 16.5V10.5H9ZM18 8.25V9.375V10.5V16.5C18 20.6438 14.6438 24 10.5 24H7.5C3.35625 24 0 20.6438 0 16.5V10.5V9.375V8.25V7.5C0 3.35625 3.35625 0 7.5 0H7.875H9H10.125H10.5C14.6438 0 18 3.35625 18 7.5V8.25ZM10.125 2.25V8.25H15.75V7.5C15.75 4.59844 13.4016 2.25 10.5 2.25H10.125ZM7.875 2.25H7.5C4.59844 2.25 2.25 4.59844 2.25 7.5V8.25H7.875V2.25Z" fill="#3057F2"/>
-                    </g>
-                    <defs>
-                      <clipPath id="clip0_22074_34970">
-                        <rect width="18" height="24" fill="white"/>
-                      </clipPath>
-                    </defs>
+                    <path d="M9 10.5H2.25V16.5C2.25 19.4016 4.59844 21.75 7.5 21.75H10.5C13.4016 21.75 15.75 19.4016 15.75 16.5V10.5H9ZM18 8.25V9.375V10.5V16.5C18 20.6438 14.6438 24 10.5 24H7.5C3.35625 24 0 20.6438 0 16.5V10.5V9.375V8.25V7.5C0 3.35625 3.35625 0 7.5 0H7.875H9H10.125H10.5C14.6438 0 18 3.35625 18 7.5V8.25ZM10.125 2.25V8.25H15.75V7.5C15.75 4.59844 13.4016 2.25 10.5 2.25H10.125ZM7.875 2.25H7.5C4.59844 2.25 2.25 4.59844 2.25 7.5V8.25H7.875V2.25Z" fill="#3057F2"/>
                   </svg>
                   <h3 class="text-sm font-medium text-[#677C92]">Notas clicadas</h3>
                 </div>
                 <div class="mt-3">
-                  <div v-if="!selectedEmpresaDetails?.nome" class="text-center text-gray-500 py-2">
-                    Carregando dados...
+                  <div v-if="!selectedEmpresaDetails?.feedbacks?.length" class="text-center text-gray-500 py-2">
+                    Nenhuma nota registrada
                   </div>
                   
                   <div v-else class="flex flex-wrap gap-2">
-                    <template v-for="i in 6" :key="`detrator-${i}`">
-                      <div v-if="countNotesByScore(selectedEmpresaDetails.nome, i) > 0" 
-                           class="flex flex-col items-center">
-                        <div class="text-xs font-medium px-2 py-1 rounded-md bg-blue-50 text-blue-700 mb-0.5">{{ i }}</div>
-                        <div class="text-xs font-medium px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">
-                          {{ countNotesByScore(selectedEmpresaDetails.nome, i) }}
+                    <template v-for="nota in getNotasClicadas(selectedEmpresaDetails)" :key="nota.score">
+                      <div class="flex flex-col items-center">
+                        <!-- Número da nota em azul -->
+                        <div class="text-xs font-medium px-2 py-1 rounded-md bg-blue-50 text-blue-700 mb-0.5">
+                          {{ nota.score }}
+                        </div>
+                        <!-- Contagem com cor baseada no tipo de nota -->
+                        <div class="text-xs font-medium px-1.5 py-0.5 rounded-full"
+                             :class="{
+                               'bg-red-100 text-red-800': nota.score <= 6,
+                               'bg-yellow-100 text-yellow-800': nota.score === 7 || nota.score === 8,
+                               'bg-green-100 text-green-800': nota.score >= 9
+                             }">
+                          {{ nota.count }}
                         </div>
                       </div>
                     </template>
-                    
-                    <template v-for="i in [7, 8]" :key="`neutro-${i}`">
-                      <div v-if="countNotesByScore(selectedEmpresaDetails.nome, i) > 0" 
-                           class="flex flex-col items-center">
-                        <div class="text-xs font-medium px-2 py-1 rounded-md bg-blue-50 text-blue-700 mb-0.5">{{ i }}</div>
-                        <div class="text-xs font-medium px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800">
-                          {{ countNotesByScore(selectedEmpresaDetails.nome, i) }}
-                        </div>
-                      </div>
-                    </template>
-                    
-                    <template v-for="i in [9, 10]" :key="`promotor-${i}`">
-                      <div v-if="countNotesByScore(selectedEmpresaDetails.nome, i) > 0" 
-                           class="flex flex-col items-center">
-                        <div class="text-xs font-medium px-2 py-1 rounded-md bg-blue-50 text-blue-700 mb-0.5">{{ i }}</div>
-                        <div class="text-xs font-medium px-1.5 py-0.5 rounded-full bg-green-100 text-green-800">
-                          {{ countNotesByScore(selectedEmpresaDetails.nome, i) }}
-                        </div>
-                      </div>
-                    </template>
-                    
-                    <div v-if="!hasAnyScores(selectedEmpresaDetails.nome)" class="text-center text-gray-500 w-full py-2">
-                      Nenhuma nota registrada
-                    </div>
                   </div>
                 </div>
               </div>
@@ -679,5 +895,11 @@ const countNotesByScore = (companyId: string, score: number): number => {
 
 .modal-shadow {
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 </style> 

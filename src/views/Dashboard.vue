@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useFeedbackStore } from '../stores/feedback'
 import { Line } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js'
 import { format, parseISO, startOfMonth, endOfMonth } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import type { ChartOptions } from 'chart.js'
+import NpsTable from '../nps-module/components/NpsTable.vue'
+import LoadingModal from '../components/LoadingModal.vue'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
@@ -13,6 +15,8 @@ const feedbackStore = useFeedbackStore()
 const visibleDatasets = ref(['agent', 'manager', 'supervisor'])
 const chartData = ref<{ labels: string[]; datasets: any[] } | null>(null)
 const isTableExpanded = ref(true)
+const isLoading = ref(false)
+const progress = ref(0)
 
 const useFilteredData = computed(() => 
   feedbackStore.filteredData.length > 0 ? feedbackStore.filteredData : feedbackStore.feedbackData
@@ -74,80 +78,72 @@ const datasetConfigs = [
   }
 ]
 
-const updateChartData = () => {
-  // Criar array com os últimos 12 meses
-  const last12Months = Array.from({ length: 12 }, (_, i) => {
-    const date = new Date()
-    date.setMonth(date.getMonth() - (11 - i)) // Começa 11 meses atrás
-    return format(date, 'MMM yyyy', { locale: ptBR })
-  })
+watch(
+  () => [useFilteredData.value, visibleDatasets.value],
+  () => {
+    // Criar array com os últimos 12 meses
+    const last12Months = Array.from({ length: 12 }, (_, i) => {
+      const date = new Date()
+      date.setMonth(date.getMonth() - (11 - i))
+      return format(startOfMonth(date), 'MMM yyyy', { locale: ptBR })
+    })
 
-  // Inicializar dados para todos os meses
-  const groupedData = last12Months.reduce((acc, month) => {
-    acc[month] = {
-      agent: { promoters: 0, detractors: 0, total: 0 },
-      manager: { promoters: 0, detractors: 0, total: 0 },
-      supervisor: { promoters: 0, detractors: 0, total: 0 }
-    }
-    return acc
-  }, {} as Record<string, Record<string, { promoters: number, detractors: number, total: number }>>)
-
-  // Agrupar dados por mês para cada função
-  useFilteredData.value.forEach(item => {
-    const date = format(parseISO(item.created_at), 'MMM yyyy', { locale: ptBR })
-    if (groupedData[date]) { // Só processa se estiver dentro dos últimos 12 meses
-      const score = item.score
-      const role = item.role
-
-      // Atualizar contadores para geral
-      if (role === 'agent') {
-        groupedData[date].agent.total++
-        if (score >= 9) groupedData[date].agent.promoters++
-        else if (score <= 6) groupedData[date].agent.detractors++
-      } else if (role === 'manager') {
-        groupedData[date].manager.total++
-        if (score >= 9) groupedData[date].manager.promoters++
-        else if (score <= 6) groupedData[date].manager.detractors++
-      } else if (role === 'supervisor') {
-        groupedData[date].supervisor.total++
-        if (score >= 9) groupedData[date].supervisor.promoters++
-        else if (score <= 6) groupedData[date].supervisor.detractors++
+    // Inicializar dados para todos os meses
+    const groupedData = last12Months.reduce((acc, month) => {
+      acc[month] = {
+        agent: { promoters: 0, detractors: 0, total: 0 },
+        manager: { promoters: 0, detractors: 0, total: 0 },
+        supervisor: { promoters: 0, detractors: 0, total: 0 }
       }
-    }
-  })
+      return acc
+    }, {} as Record<string, Record<string, { promoters: number, detractors: number, total: number }>>)
 
-  // Criar datasets
-  const datasets: any[] = []
-  datasetConfigs.forEach(config => {
-    if (visibleDatasets.value.includes(config.id)) {
-      const data = last12Months.map(month => {
-        const stats = groupedData[month][config.id]
-        if (stats.total === 0) return 0
-        return Math.round(((stats.promoters - stats.detractors) / stats.total) * 100)
-      })
+    // Agrupar dados por mês para cada função
+    useFilteredData.value.forEach(item => {
+      try {
+        const itemDate = parseISO(item.created_at)
+        const monthKey = format(startOfMonth(itemDate), 'MMM yyyy', { locale: ptBR })
+        
+        if (groupedData[monthKey]) {
+          const role = item.role
+          const score = Number(item.score)
 
-      datasets.push({
+          if (role in groupedData[monthKey]) {
+            groupedData[monthKey][role].total++
+            if (score >= 9) groupedData[monthKey][role].promoters++
+            else if (score <= 6) groupedData[monthKey][role].detractors++
+          }
+        }
+      } catch (error) {
+        console.error('Erro ao processar data:', item.created_at)
+      }
+    })
+
+    // Criar datasets
+    const datasets = datasetConfigs
+      .filter(config => visibleDatasets.value.includes(config.id))
+      .map(config => ({
         label: config.label,
-        data: data,
+        data: last12Months.map(month => {
+          const stats = groupedData[month][config.role]
+          if (stats.total === 0) return 0
+          return Math.round(((stats.promoters - stats.detractors) / stats.total) * 100)
+        }),
         borderColor: config.color,
         backgroundColor: config.color,
         tension: 0.4,
         borderWidth: 2,
         pointRadius: 4,
         pointHoverRadius: 6
-      })
+      }))
+
+    chartData.value = {
+      labels: last12Months,
+      datasets
     }
-  })
-
-  return {
-    labels: last12Months,
-    datasets
-  }
-}
-
-watch([useFilteredData, visibleDatasets], () => {
-  chartData.value = updateChartData()
-}, { immediate: true })
+  },
+  { immediate: true, deep: true }
+)
 
 const chartOptions = ref<ChartOptions<'line'>>({
   responsive: true,
@@ -201,9 +197,31 @@ const hasActiveFilters = computed(() => {
 const toggleTable = () => {
   isTableExpanded.value = !isTableExpanded.value
 }
+
+const handleLoadingProgress = (value: number) => {
+  if (isLoading.value) {
+    progress.value = value
+    if (value === 100) {
+      setTimeout(() => {
+        isLoading.value = false
+      }, 1000)
+    }
+  }
+}
+
+onMounted(async () => {
+  // Não chamar filterFeedback aqui
+  // Apenas usar os dados já filtrados do store
+})
 </script>
 
 <template>
+  <!-- Loading Modal - só mostrar se estiver carregando E não tiver dados -->
+  <LoadingModal 
+    v-if="isLoading && !feedbackStore.isDataLoaded"
+    :progress="progress"
+  />
+
   <div class="flex-1 bg-[#F9FAFC] space-y-6">
     <!-- Cards principais -->
     <div class="grid grid-cols-2 gap-6">
@@ -310,6 +328,13 @@ const toggleTable = () => {
           />
         </div>
         <div class="h-4"></div>
+      </div>
+    </div>
+
+    <!-- Adicionar a tabela NPS no final -->
+    <div class="mt-8">
+      <div class="bg-white rounded-[10px] border border-[#E1E9F4] shadow-[0_12px_24px_0_rgba(23,18,63,0.03)]">
+        <NpsTable @loading-progress="handleLoadingProgress" />
       </div>
     </div>
   </div>
