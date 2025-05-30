@@ -65,7 +65,7 @@ const toggleAllScores = () => {
 
 const periods = [
   { value: 'all', label: 'Todo Período' },
-  { value: 'today', label: 'Hoje' },
+  { value: 'today', label: 'Último dia' },
   { value: 'week', label: 'Última Semana' },
   { value: 'month', label: 'Último Mês' },
   { value: 'quarter', label: 'Último Trimestre' },

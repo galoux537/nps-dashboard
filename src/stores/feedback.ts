@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { subDays, parseISO, isAfter, isBefore, isEqual, startOfDay, endOfDay } from 'date-fns'
+import { subDays, parseISO, isAfter, isBefore, isEqual, startOfDay, endOfDay, format } from 'date-fns'
 import api from '../nps-module/plugins/axios'
 import { useProgressStore } from './progress'
 import { useLoadingStore } from './loading'
@@ -54,6 +54,7 @@ export const useFeedbackStore = defineStore('feedback', () => {
   const isDataLoaded = ref(false)
   const progressStore = useProgressStore()
   const loadingStore = useLoadingStore()
+  const lastFetchDate = ref<string | null>(null)
   
   // Definir filtros padrão (3 meses)
   const defaultFilters = {
@@ -87,73 +88,83 @@ export const useFeedbackStore = defineStore('feedback', () => {
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 5)
   }
 
-  // Modificar loadFromCache para não disparar loading
-  const loadFromCache = () => {
-    try {
-      const cachedData = localStorage.getItem(CACHE_KEY)
-      const lastUpdate = localStorage.getItem(CACHE_TIMESTAMP_KEY)
-      
-      if (cachedData && lastUpdate) {
-        const parsedData = JSON.parse(cachedData)
-        feedbackData.value = parsedData
-        filteredData.value = parsedData
-        isDataLoaded.value = true
-        
-        // Aplicar filtros sem disparar loading
-        const currentFilters = loadSavedFilters()
-        filterFeedback(
-          currentFilters.period,
-          currentFilters.roles,
-          currentFilters.scores,
-          currentFilters.startDate,
-          currentFilters.endDate
-        )
-
-        return {
-          hasCache: true,
-          lastUpdate: new Date(Number(lastUpdate))
-        }
-      }
-    } catch (error) {
-      console.error('Erro ao carregar cache:', error)
-    }
-    return { hasCache: false, lastUpdate: null }
-  }
-
-  // Função separada para inicializar dados sem loading
-  const initializeData = async () => {
-    const { hasCache } = loadFromCache()
-    if (!hasCache) {
-      await fetchData()
-    }
-  }
-
-  // Salvar dados no cache
+  // Função para salvar no cache com data da última atualização
   const saveToCache = (data: FeedbackData[]) => {
     try {
       localStorage.setItem(CACHE_KEY, JSON.stringify(data))
-      localStorage.setItem(CACHE_TIMESTAMP_KEY, Date.now().toString())
+      localStorage.setItem('last_fetch_date', format(new Date(), 'yyyy-MM-dd'))
     } catch (error) {
       console.error('Erro ao salvar cache:', error)
     }
   }
 
-  // Verificar se o cache está expirado
-  const isCacheExpired = (lastUpdate: Date) => {
-    return Date.now() - lastUpdate.getTime() > CACHE_DURATION
+  // Função para carregar dados do cache
+  const loadFromCache = () => {
+    try {
+      const cachedData = localStorage.getItem(CACHE_KEY)
+      const lastFetch = localStorage.getItem('last_fetch_date')
+      
+      if (cachedData) {
+        feedbackData.value = JSON.parse(cachedData)
+        lastFetchDate.value = lastFetch
+        return { hasCache: true, lastFetch }
+      }
+    } catch (error) {
+      console.error('Erro ao carregar cache:', error)
+    }
+    return { hasCache: false, lastFetch: null }
   }
 
-  // Modificar addFeedbackData para não aplicar filtros automaticamente
-  const addFeedbackData = (data: FeedbackData[]) => {
-    const dataWithUID = data.map(item => ({
-      ...item,
-      _uid: generateUID()
-    }))
-    
-    feedbackData.value = dataWithUID
-    filteredData.value = dataWithUID // Inicialmente, mostrar todos os dados
-    isDataLoaded.value = true
-    saveToCache(dataWithUID)
+  // Função para buscar apenas dados novos
+  const fetchNewData = async () => {
+    try {
+      const today = new Date()
+      const startDate = lastFetchDate.value 
+        ? parseISO(lastFetchDate.value)
+        : subDays(today, 365) // Se não tiver cache, busca último ano
+
+      const response = await api.get('/nps', {
+        params: {
+          start_date: format(startDate, 'yyyy-MM-dd'),
+          end_date: format(today, 'yyyy-MM-dd'),
+          per_page: 10000
+        }
+      })
+
+      const newData = response.data.data || response.data
+
+      // Mesclar dados novos com existentes
+      if (Array.isArray(newData) && newData.length > 0) {
+        const existingIds = new Set(feedbackData.value.map(item => item._uid))
+        const uniqueNewData = newData.filter(item => !existingIds.has(item._uid))
+
+        if (uniqueNewData.length > 0) {
+          feedbackData.value = [...uniqueNewData, ...feedbackData.value]
+          saveToCache(feedbackData.value)
+          console.log(`${uniqueNewData.length} novos registros adicionados`)
+        }
+      }
+
+      return true
+    } catch (error) {
+      console.error('Erro ao buscar dados novos:', error)
+      return false
+    }
+  }
+
+  // Função principal de inicialização
+  const initializeData = async () => {
+    const { hasCache } = loadFromCache()
+
+    if (!hasCache) {
+      // Primeira vez: mostrar loading e buscar dados completos
+      loadingStore.startLoading()
+      await fetchNewData()
+      loadingStore.finishLoading()
+    } else {
+      // Tem cache: buscar silenciosamente apenas dados novos
+      fetchNewData()
+    }
   }
 
   const totalResponses = computed(() => feedbackData.value.length)
@@ -278,8 +289,8 @@ export const useFeedbackStore = defineStore('feedback', () => {
   // Função para carregar dados com suporte a cache
   const fetchData = async () => {
     // Verificar cache primeiro, sem mostrar loading
-    const { hasCache, lastUpdate } = loadFromCache()
-    if (hasCache && lastUpdate && !isCacheExpired(lastUpdate)) {
+    const { hasCache, lastFetch } = loadFromCache()
+    if (hasCache && lastFetch && !isCacheExpired(new Date(lastFetch))) {
       return // Se tiver cache válido, retorna silenciosamente
     }
 
@@ -444,6 +455,37 @@ export const useFeedbackStore = defineStore('feedback', () => {
         return acc
       }, {} as Record<number, FeedbackData[]>)
     }))
+  }
+
+  // Verificar se o cache está expirado
+  const isCacheExpired = (lastUpdate: Date) => {
+    return Date.now() - lastUpdate.getTime() > CACHE_DURATION
+  }
+
+  // Ajustar a função addFeedbackData para incluir todos os campos necessários
+  const addFeedbackData = (data: any[]) => {
+    const dataWithUID = data.map(item => ({
+      user_id: String(item.user_id || ''),
+      score: Number(item.score) || 0,
+      reason: String(item.reason || '-'),
+      created_at: String(item.created_at || new Date().toISOString()),
+      company_id: String(item.company_id || ''),
+      role: String(item.role || 'agent'),
+      user_name: String(item.user_name || ''),
+      company_name: String(item.company_name || ''),
+      _uid: generateUID()
+    }))
+    
+    // Mesclar com dados existentes evitando duplicatas
+    const existingIds = new Set(feedbackData.value.map(item => item._uid))
+    const uniqueNewData = dataWithUID.filter(item => !existingIds.has(item._uid))
+    
+    if (uniqueNewData.length > 0) {
+      feedbackData.value = [...uniqueNewData, ...feedbackData.value]
+      filteredData.value = feedbackData.value
+      isDataLoaded.value = true
+      saveToCache(feedbackData.value)
+    }
   }
 
   return {
